@@ -3,6 +3,101 @@ import AppKit
 @testable import SnipX
 
 final class EditorTests: XCTestCase {
+    func testHoverCursorMatchesDragAndOptionDrawing() async throws {
+        await MainActor.run {
+            _ = NSApplication.shared
+            let canvas = AnnotationCanvas(image: fixture())
+            canvas.append(Annotation(tool: .rectangle, points: [CGPoint(x: 40, y: 40), CGPoint(x: 140, y: 100)], color: .red, width: 5))
+            @MainActor func event(_ type: NSEvent.EventType, _ point: CGPoint, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: canvas.convert(point, to: nil), modifierFlags: flags,
+                                   timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            }
+            NSCursor.arrow.set()
+            canvas.mouseMoved(with: event(.mouseMoved, CGPoint(x: 40, y: 60)))
+            XCTAssertEqual(NSCursor.current, NSCursor.openHand)
+            canvas.mouseDown(with: event(.leftMouseDown, CGPoint(x: 40, y: 60)))
+            XCTAssertEqual(NSCursor.current, NSCursor.closedHand)
+            canvas.mouseUp(with: event(.leftMouseUp, CGPoint(x: 40, y: 60)))
+            XCTAssertEqual(NSCursor.current, NSCursor.openHand)
+            canvas.mouseMoved(with: event(.mouseMoved, CGPoint(x: 40, y: 60), flags: .option))
+            XCTAssertEqual(NSCursor.current, NSCursor.crosshair)
+            canvas.mouseMoved(with: event(.mouseMoved, CGPoint(x: 80, y: 70)))
+            XCTAssertEqual(NSCursor.current, NSCursor.crosshair)
+            canvas.tool = .text
+            canvas.mouseMoved(with: event(.mouseMoved, CGPoint(x: 80, y: 70)))
+            XCTAssertEqual(NSCursor.current, NSCursor.iBeam)
+            canvas.mouseMoved(with: event(.mouseMoved, CGPoint(x: 40, y: 60)))
+            XCTAssertEqual(NSCursor.current, NSCursor.openHand)
+            let exit = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+                                             windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+            canvas.mouseExited(with: exit)
+            XCTAssertEqual(NSCursor.current, NSCursor.arrow)
+        }
+    }
+    func testMoveAnnotationsAndPanAtDifferentZooms() async throws {
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let canvas = AnnotationCanvas(image: fixture())
+            let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+            let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = scroll; scroll.documentView = canvas
+            defer { window.close() }
+            @MainActor func event(_ type: NSEvent.EventType, _ point: CGPoint, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: flags, timestamp: 0,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            for zoom: CGFloat in [0.5, 1, 2] {
+                canvas.setFrameSize(CGSize(width: 960 * zoom, height: 560 * zoom))
+                canvas.setBoundsSize(CGSize(width: 960, height: 560))
+                scroll.contentView.scroll(to: .zero)
+                let item = Annotation(tool: .rectangle, points: [CGPoint(x: 40, y: 40), CGPoint(x: 140, y: 100)], color: .red, width: 5)
+                canvas.append(item)
+                let before = try canvas.flattened()
+                let start = canvas.convert(CGPoint(x: 40, y: 60), to: nil)
+                let end = canvas.convert(CGPoint(x: 60, y: 75), to: nil)
+                canvas.mouseDown(with: event(.leftMouseDown, start))
+                canvas.mouseDragged(with: event(.leftMouseDragged, end))
+                canvas.mouseUp(with: event(.leftMouseUp, end))
+                XCTAssertEqual(canvas.annotations.last?.points, [CGPoint(x: 60, y: 55), CGPoint(x: 160, y: 115)])
+                canvas.undoAnnotation()
+                XCTAssertEqual(canvas.annotations.last?.points, item.points)
+                XCTAssertEqual(NSBitmapImageRep(cgImage: before).representation(using: .png, properties: [:]),
+                               NSBitmapImageRep(cgImage: try canvas.flattened()).representation(using: .png, properties: [:]))
+                canvas.redoAnnotation()
+                XCTAssertEqual(canvas.annotations.last?.points.first, CGPoint(x: 60, y: 55))
+                canvas.undoAnnotation(); canvas.undoAnnotation()
+                let origin = scroll.contentView.bounds.origin
+                canvas.rightMouseDown(with: event(.rightMouseDown, CGPoint(x: 150, y: 100)))
+                canvas.rightMouseDragged(with: event(.rightMouseDragged, CGPoint(x: 120, y: 120)))
+                canvas.rightMouseUp(with: event(.rightMouseUp, CGPoint(x: 120, y: 120)))
+                XCTAssertEqual(scroll.contentView.bounds.origin.x, origin.x + 30, accuracy: 0.01)
+                XCTAssertEqual(scroll.contentView.bounds.origin.y, origin.y + 20, accuracy: 0.01)
+                XCTAssertTrue(canvas.annotations.isEmpty)
+            }
+        }
+    }
+
+    func testHitTestingAndOptionDrawing() async throws {
+        await MainActor.run {
+            let canvas = AnnotationCanvas(image: fixture())
+            for tool in AnnotationTool.allCases {
+                canvas.append(Annotation(tool: tool, points: [CGPoint(x: 100, y: 100), CGPoint(x: 200, y: 200)], color: .red, width: 10, text: "测试"))
+                let hit = tool == .oval ? CGPoint(x: 150, y: 100) : CGPoint(x: 100, y: 100)
+                XCTAssertEqual(canvas.annotationIndex(at: hit), canvas.annotations.count - 1, "\(tool)")
+            }
+            XCTAssertNil(canvas.annotationIndex(at: CGPoint(x: 400, y: 400)))
+            let point = canvas.convert(CGPoint(x: 100, y: 100), to: nil)
+            let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: .option, timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: .option, timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            canvas.mouseDown(with: down); canvas.mouseUp(with: up)
+            XCTAssertEqual(canvas.annotations.count, AnnotationTool.allCases.count + 1)
+            XCTAssertEqual(canvas.annotations.last?.tool, .pen)
+            canvas.undoAnnotation()
+            canvas.append(Annotation(tool: .step, points: [.zero], color: .red, width: 20, text: "1"))
+            XCTAssertFalse(canvas.canRedo)
+        }
+    }
     @MainActor private func fixture(width: Int = 960, height: Int = 560) -> CGImage {
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
         NSGraphicsContext.saveGraphicsState()

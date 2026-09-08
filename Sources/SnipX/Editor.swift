@@ -19,12 +19,16 @@ struct Annotation {
 @MainActor
 final class AnnotationCanvas: NSView {
     let source: CGImage
-    var tool: AnnotationTool = .pen
+    var tool: AnnotationTool = .pen { didSet { refreshCursor() } }
     var ink: NSColor = .systemRed
     var strokeWidth: CGFloat = 5
     var textSize: CGFloat = 32
-    private var annotations: [Annotation] = []
-    private var undone: [Annotation] = []
+    private(set) var annotations: [Annotation] = [] { didSet { refreshCursor() } }
+    private var hoverTrackingArea: NSTrackingArea?
+    private var history: [[Annotation]] = []
+    private var undone: [[Annotation]] = []
+    private var moving: (index: Int, origin: CGPoint, before: [Annotation])?
+    private var pan: (point: CGPoint, origin: CGPoint)?
     private var draft: Annotation?
     private lazy var pixelated: CGImage? = {
         let input = CIImage(cgImage: source)
@@ -33,7 +37,7 @@ final class AnnotationCanvas: NSView {
         return CIContext().createCGImage(output, from: input.extent)
     }()
     var onChange: (() -> Void)?
-    var canUndo: Bool { !annotations.isEmpty }
+    var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !undone.isEmpty }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -43,7 +47,37 @@ final class AnnotationCanvas: NSView {
         super.init(frame: CGRect(x: 0, y: 0, width: image.width, height: image.height))
     }
     required init?(coder: NSCoder) { fatalError() }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair) }
+    override func resetCursorRects() { refreshCursor() }
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area); hoverTrackingArea = area
+        super.updateTrackingAreas()
+        refreshCursor()
+    }
+    private func updateCursor(at point: CGPoint, modifiers: NSEvent.ModifierFlags) {
+        if moving != nil || pan != nil { NSCursor.closedHand.set() }
+        else if !visibleRect.contains(point) { NSCursor.arrow.set() }
+        else if draft == nil, !modifiers.contains(.option), annotationIndex(at: point) != nil { NSCursor.openHand.set() }
+        else { (tool == .text ? NSCursor.iBeam : NSCursor.crosshair).set() }
+    }
+    private func refreshCursor() {
+        guard let window, window.isKeyWindow else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard visibleRect.contains(point) else { return }
+        updateCursor(at: point, modifiers: NSEvent.modifierFlags)
+    }
+    override func mouseMoved(with event: NSEvent) {
+        updateCursor(at: convert(event.locationInWindow, from: nil), modifiers: event.modifierFlags)
+    }
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+    override func cursorUpdate(with event: NSEvent) { mouseMoved(with: event) }
+    override func mouseExited(with event: NSEvent) {
+        if moving == nil, pan == nil { NSCursor.arrow.set() }
+    }
+    override func flagsChanged(with event: NSEvent) { refreshCursor() }
     override func draw(_ dirtyRect: NSRect) { render(includeDraft: true) }
     private func render(includeDraft: Bool) {
         let rect = CGRect(x: 0, y: 0, width: source.width, height: source.height)
@@ -105,6 +139,12 @@ final class AnnotationCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        guard pan == nil else { return }
+        if !event.modifierFlags.contains(.option), let index = annotationIndex(at: point) {
+            moving = (index, point, annotations)
+            NSCursor.closedHand.set()
+            return
+        }
         if tool == .step {
             let number = annotations.filter { $0.tool == .step }.count + 1
             append(Annotation(tool: .step, points: [point], color: ink, width: textSize, text: String(number)))
@@ -128,6 +168,15 @@ final class AnnotationCanvas: NSView {
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
+        if let moving {
+            let point = convert(event.locationInWindow, from: nil)
+            let delta = CGPoint(x: point.x - moving.origin.x, y: point.y - moving.origin.y)
+            annotations[moving.index].points = moving.before[moving.index].points.map {
+                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+            }
+            needsDisplay = true
+            return
+        }
         guard let tool = draft?.tool, let first = draft?.points.first else { return }
         let raw = convert(event.locationInWindow, from: nil)
         let point = CGPoint(x: min(max(0, raw.x), bounds.width), y: min(max(0, raw.y), bounds.height))
@@ -136,21 +185,92 @@ final class AnnotationCanvas: NSView {
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
+        if let moving {
+            mouseDragged(with: event)
+            if annotations[moving.index].points != moving.before[moving.index].points {
+                history.append(moving.before); undone.removeAll(); onChange?()
+            }
+            self.moving = nil
+            window?.invalidateCursorRects(for: self)
+            mouseMoved(with: event)
+            return
+        }
         guard draft != nil else { return }
         mouseDragged(with: event)
         if let draft { append(draft) }
         draft = nil; needsDisplay = true
+        mouseMoved(with: event)
     }
     func append(_ annotation: Annotation) {
+        history.append(annotations)
         annotations.append(annotation); undone.removeAll(); needsDisplay = true; onChange?()
     }
     @objc func undoAnnotation() {
-        guard let value = annotations.popLast() else { return }
-        undone.append(value); needsDisplay = true; onChange?()
+        guard moving == nil, draft == nil, let value = history.popLast() else { return }
+        undone.append(annotations); annotations = value; needsDisplay = true; onChange?()
     }
     @objc func redoAnnotation() {
-        guard let value = undone.popLast() else { return }
-        annotations.append(value); needsDisplay = true; onChange?()
+        guard moving == nil, draft == nil, let value = undone.popLast() else { return }
+        history.append(annotations); annotations = value; needsDisplay = true; onChange?()
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        guard moving == nil, draft == nil, let clip = enclosingScrollView?.contentView else { return }
+        pan = (event.locationInWindow, clip.bounds.origin)
+        NSCursor.closedHand.set()
+    }
+    override func rightMouseDragged(with event: NSEvent) {
+        guard let pan, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        // Convert the window-space delta without including the changing scroll origin.
+        let start = clip.convert(pan.point, from: nil)
+        let end = clip.convert(event.locationInWindow, from: nil)
+        let proposed = CGRect(origin: CGPoint(x: pan.origin.x - (end.x - start.x),
+                                              y: pan.origin.y - (end.y - start.y)), size: clip.bounds.size)
+        clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
+        scroll.reflectScrolledClipView(clip)
+    }
+    override func rightMouseUp(with event: NSEvent) {
+        rightMouseDragged(with: event)
+        pan = nil
+        window?.invalidateCursorRects(for: self)
+        mouseMoved(with: event)
+    }
+
+    func annotationIndex(at point: CGPoint) -> Int? {
+        let scale = max(0.001, frame.width / bounds.width)
+        let tolerance = 6 / scale
+        return annotations.indices.reversed().first { index in
+            let item = annotations[index]
+            guard let first = item.points.first, let last = item.points.last else { return false }
+            let box = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
+                             width: abs(last.x - first.x), height: abs(last.y - first.y))
+            if item.tool == .text {
+                let size = item.text.size(withAttributes: [.font: NSFont.systemFont(ofSize: item.width, weight: .semibold)])
+                return CGRect(origin: first, size: size).insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+            }
+            if item.tool == .step { return hypot(point.x - first.x, point.y - first.y) <= item.width * 1.35 / 2 + tolerance }
+            if item.tool == .pixelate { return box.insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
+            let path = CGMutablePath()
+            switch item.tool {
+            case .rectangle: path.addRect(box)
+            case .oval: path.addEllipse(in: box)
+            case .pen:
+                if item.points.count == 1 { return hypot(point.x - first.x, point.y - first.y) <= item.width / 2 + tolerance }
+                path.addLines(between: item.points)
+            case .line, .arrow:
+                path.move(to: first); path.addLine(to: last)
+                if item.tool == .arrow {
+                    let angle = atan2(last.y - first.y, last.x - first.x)
+                    let length = max(16, item.width * 4)
+                    for spread in [-CGFloat.pi / 6, CGFloat.pi / 6] {
+                        path.move(to: last)
+                        path.addLine(to: CGPoint(x: last.x - length * cos(angle + spread), y: last.y - length * sin(angle + spread)))
+                    }
+                }
+            default: return false
+            }
+            return path.copy(strokingWithWidth: item.width + tolerance * 2, lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
+        }
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
@@ -311,7 +431,7 @@ final class EditorController: NSWindowController, NSWindowDelegate {
     }
     func present() { showWindow(nil); NSApp.activate(ignoringOtherApps: true); window?.makeKeyAndOrderFront(nil); window?.contentView?.layoutSubtreeIfNeeded(); fit() }
     private func updateStatus(_ text: String? = nil) {
-        status.stringValue = text ?? "\(canvas.source.width) × \(canvas.source.height) px   ·   \(Int(zoom * 100))%   ·   ⌘Z 撤销 / ⇧⌘Z 重做"
+        status.stringValue = text ?? "\(canvas.source.width) × \(canvas.source.height) px · \(Int(zoom * 100))% · 右键拖动平移 · 左键拖动标注 · ⌥ 绘制新标注 · ⌘Z 撤销 / ⇧⌘Z 重做"
         undoButton.isEnabled = canvas.canUndo; redoButton.isEnabled = canvas.canRedo
     }
     private func setZoom(_ value: CGFloat) {
