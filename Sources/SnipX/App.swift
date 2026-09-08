@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch { shortcut?.stringValue = self.shortcutLabel; self.showError(error) }
         }
         stack.addArrangedSubview(shortcut)
-        let instructions = NSTextField(wrappingLabelWithString: "1. 授予屏幕录制权限，然后按快捷键。\n2. 拖动选区；按 2 选窗口，按 3 截全屏。\n3. 添加画笔、直线、矩形和文字，再复制、保存或置顶。\n4. 长截图时框选内容区，缓慢向下滚动，再点「完成」。\n\n贴图可拖动、缩放；右键可复制、保存、调整透明度或关闭。\n所有截图仅在本机处理，不会上传。")
+        let instructions = NSTextField(wrappingLabelWithString: "1. 授予屏幕录制权限，然后按快捷键。\n2. 框选后拖动边框调整、内部移动，按 Enter 确认。\n3. 添加画笔、直线、矩形和文字，再复制、保存或置顶。\n4. 长截图时框选并确认内容区，缓慢向下滚动，再点「完成」。\n\n贴图可拖动、缩放；右键可复制、保存、调整透明度或关闭。\n所有截图仅在本机处理，不会上传。")
         instructions.font = .systemFont(ofSize: 13); stack.addArrangedSubview(instructions)
         let permission = NSButton(title: "授权屏幕录制 / 打开系统设置", target: self, action: #selector(openPermissions))
         permission.bezelStyle = .rounded; stack.addArrangedSubview(permission)
