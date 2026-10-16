@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import ScreenCaptureKit
+import ServiceManagement
 
 @main
 struct SnipXMain {
@@ -20,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKey = HotKey()
     private var item: NSStatusItem!
     private var settings: NSWindow?
+    private var launchAtLoginButton: NSButton?
+    private var launchAtLoginStatus: NSTextField?
     private var editors: [UUID: EditorController] = [:]
     private var pins: [UUID: PinnedImageController] = [:]
     private var scrolling: ScrollingCaptureController?
@@ -126,8 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func closePins() { let current = Array(pins.values); current.forEach { $0.close() }; pins.removeAll() }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func showSettings() {
+        refreshLaunchAtLogin()
         if let settings { settings.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 470), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 590), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "SnipX · 设置与使用说明"; window.isReleasedWhenClosed = false
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 18
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -149,6 +153,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch { shortcut?.stringValue = self.shortcutLabel; self.showError(error) }
         }
         stack.addArrangedSubview(shortcut)
+        let startup = NSStackView(); startup.orientation = .vertical; startup.alignment = .leading; startup.spacing = 6
+        let launchButton = NSButton(checkboxWithTitle: "登录时自动启动 SnipX", target: self, action: #selector(toggleLaunchAtLogin(_:)))
+        launchAtLoginButton = launchButton; startup.addArrangedSubview(launchButton)
+        let launchStatus = NSTextField(wrappingLabelWithString: "")
+        launchStatus.font = .systemFont(ofSize: 12); launchStatus.textColor = .secondaryLabelColor
+        launchAtLoginStatus = launchStatus; startup.addArrangedSubview(launchStatus)
+        let loginSettings = NSButton(title: "打开系统登录项设置…", target: self, action: #selector(openLoginItemSettings))
+        loginSettings.bezelStyle = .rounded; startup.addArrangedSubview(loginSettings)
+        stack.addArrangedSubview(startup)
+        refreshLaunchAtLogin()
         let instructions = NSTextField(wrappingLabelWithString: "1. 授予屏幕录制权限，然后按快捷键。\n2. 框选后拖动边框调整、内部移动，按 Enter 确认。\n3. 添加画笔、直线、矩形和文字，再复制、保存或置顶。\n4. 长截图时框选并确认内容区，缓慢向下滚动，再点「完成」。\n\n贴图可拖动、缩放；右键可复制、保存、调整透明度或关闭。\n所有截图仅在本机处理，不会上传。")
         instructions.font = .systemFont(ofSize: 13); stack.addArrangedSubview(instructions)
         let permission = NSButton(title: "授权屏幕录制 / 打开系统设置", target: self, action: #selector(openPermissions))
@@ -161,6 +175,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CGRequestScreenCaptureAccess()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
     }
+    func applicationDidBecomeActive(_ notification: Notification) { refreshLaunchAtLogin() }
+
+    private func refreshLaunchAtLogin() {
+        guard let button = launchAtLoginButton, let label = launchAtLoginStatus else { return }
+        // Read system state rather than keeping a preference that can drift out of sync.
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            button.state = .off; button.isEnabled = false
+            label.stringValue = "请运行打包后的 SnipX.app，以设置登录时自动启动。"
+            return
+        }
+        button.isEnabled = true
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            button.state = .on
+            label.stringValue = "已启用：登录 Mac 后自动在菜单栏运行。"
+        case .requiresApproval:
+            button.state = .on
+            label.stringValue = "已注册，但尚未获准启动。请在系统登录项设置中允许 SnipX；取消勾选可移除注册。"
+        case .notRegistered:
+            button.state = .off
+            label.stringValue = "未启用：需要手动打开 SnipX。"
+        case .notFound:
+            button.state = .off
+            label.stringValue = "系统未找到登录项，请将 SnipX.app 放入“应用程序”后重试。"
+        @unknown default:
+            button.state = .off; button.isEnabled = false
+            label.stringValue = "无法识别登录项状态，请在系统登录项设置中检查。"
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: NSButton) {
+        let service = SMAppService.mainApp
+        do {
+            if sender.state == .on {
+                if service.status == .requiresApproval {
+                    SMAppService.openSystemSettingsLoginItems()
+                } else if service.status != .enabled {
+                    try service.register()
+                }
+            } else if service.status == .enabled || service.status == .requiresApproval {
+                try service.unregister()
+            }
+        } catch {
+            refreshLaunchAtLogin()
+            let alert = NSAlert()
+            alert.messageText = "无法更新自动启动设置"
+            alert.informativeText = "请确认正在运行已签名的 SnipX.app，并检查系统登录项设置。\n\n\(error.localizedDescription)"
+            alert.runModal()
+        }
+        refreshLaunchAtLogin()
+    }
+
+    @objc private func openLoginItemSettings() { SMAppService.openSystemSettingsLoginItems() }
     private func showError(_ error: Error) { NSApp.activate(ignoringOtherApps: true); NSAlert(error: error).runModal() }
     func applicationWillTerminate(_ notification: Notification) { overlay.close(); scrolling?.cancel() }
 }
