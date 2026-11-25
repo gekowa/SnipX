@@ -46,13 +46,28 @@ SnipX 是一款专为 macOS 打造的轻量级原生菜单栏截图工具。基�
 
 ## 快速开始
 
-### 打包并运行应用
+### 直接下载 DMG 安装（推荐）
 
-项目提供一键打包脚本，编译 Release 产物并封装为已签名的 `dist/SnipX.app`：
+前往 [**GitHub Releases**](https://github.com/gekowa/SnipX/releases/latest) 下载最新版本的 `SnipX-<version>.dmg`：
+
+1. 双击打开 `.dmg` 镜像，将 **`SnipX.app`** 拖入 **`Applications`（应用程序）** 目录。
+2. 由于应用默认采用无证书 Ad-hoc 签名（未经过 Apple 公证），首次启动若遇到系统拦截提示，请在终端执行以下命令清除下载隔离属性后再打开：
+   ```bash
+   xattr -cr /Applications/SnipX.app
+   ```
+3. 打开应用后，按提示在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」中开启 SnipX 权限。
+
+### 从源码打包并运行应用
+
+项目提供一键打包脚本，编译 Release 产物并封装为已签名的 `dist/SnipX.app` 或 `dist/SnipX-<version>.dmg`：
 
 ```bash
+# 构建 dist/SnipX.app
 ./scripts/build.sh
 open dist/SnipX.app
+
+# 构建可分发安装包 dist/SnipX-1.0.0.dmg（附带 SHA-256 校验文件）
+./scripts/build-dmg.sh
 ```
 
 > **提示**：
@@ -117,11 +132,14 @@ dist/SnipX.app/Contents/MacOS/SnipX --smoke-test
 
 ```text
 SnipX/
+├── .github/workflows/
+│   └── release.yml                # GitHub Actions 自动测试、打包 DMG 并发布至 Release
 ├── Package.swift                  # SwiftPM 配置（SnipCore 库 + SnipX 可执行程序 + 测试目标）
 ├── Resources/
 │   └── Info.plist                 # 应用 Bundle 元信息、LSUIElement 与屏幕录制权限描述
 ├── scripts/
-│   └── build.sh                   # Release 编译、.app 目录组装与 codesign 签名脚本
+│   ├── build.sh                   # Release 编译、.app 目录组装与 codesign 签名脚本
+│   └── build-dmg.sh               # 生成带 Applications 快捷方式的 UDZO .dmg 镜像与 SHA-256 校验文件
 ├── Sources/
 │   ├── SnipCore/                  # 纯算法与几何核心层（仅依赖 Foundation + CoreGraphics）
 │   │   ├── Geometry.swift         # 框选矩形归一化、AppKit/Quartz 坐标系换算、Retina 像素裁剪换算

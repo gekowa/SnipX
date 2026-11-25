@@ -29,6 +29,9 @@ swift test --scratch-path .build --filter EditorTests/testMoveAnnotationsAndPanA
 # 构建 Release 并打包签名生成 dist/SnipX.app（默认使用 '-' 进行 ad-hoc 签名）
 ./scripts/build.sh
 
+# 构建 Release DMG 安装镜像 dist/SnipX-<version>.dmg（推送 v* 标签时由 .github/workflows/release.yml 自动触发并发布到 GitHub Releases）
+./scripts/build-dmg.sh
+
 # 使用指定证书签名打包
 SIGNING_IDENTITY="Developer ID Application: ..." ./scripts/build.sh
 
@@ -98,4 +101,4 @@ dist/SnipX.app/Contents/MacOS/SnipX --smoke-test
 - **编写测试注意事项**：
   - 纯算法、几何变换、选区状态与图像拼接逻辑必须优先放入 `SnipCore` 并在 `Tests/SnipCoreTests/` 中编写无 UI 依赖的单元测试。
   - 在 `Tests/SnipXTests/` 中测试 AppKit 视图/窗口时，测试方法需在 `await MainActor.run` 中执行，先触发 `_ = NSApplication.shared`，对测试创建的 `NSWindow` 显式设置 `window.isReleasedWhenClosed = false` 并配合 `defer { window.close() }` 释放，防止 XCTest 退出时因 AppKit 双重释放崩溃。
-  - **已知细节**：[EditorTests.swift](Tests/SnipXTests/EditorTests.swift) 中的 `testToolbarLayoutAndGeneratePreview` 将预览图写入硬编码路径 `/Users/xhguo/Workspace/0.FUN/SnipX/.build/editor-preview.png`。若在全新目录、Git Worktree 或 CI 环境中运行测试，需注意该绝对路径依赖（修改相关测试时建议改为基于临时目录或相对 `.build` 路径）。
+  - [EditorTests.swift](Tests/SnipXTests/EditorTests.swift) 中的 `testToolbarLayoutAndGeneratePreview` 会基于 `#filePath` 将预览图输出至仓库根目录下的 `.build/editor-preview.png`（会自动创建父目录，兼容本地与 GitHub Actions CI 环境）。

@@ -150,7 +150,11 @@ final class EditorTests: XCTestCase {
             let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
             root.cacheDisplay(in: root.bounds, to: bitmap)
             let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            try data.write(to: URL(fileURLWithPath: "/Users/xhguo/Workspace/0.FUN/SnipX/.build/editor-preview.png"))
+            let previewURL = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent(".build/editor-preview.png")
+            try FileManager.default.createDirectory(at: previewURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: previewURL)
         }
     }
     func testFlattenPreservesResolutionAndOrientation() async throws {
